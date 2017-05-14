@@ -16,14 +16,14 @@ import static java.lang.annotation.RetentionPolicy.SOURCE;
 /**
  * Functify
  * --------
- *
+ * <p>
  * Enables you to write an asynchronous work on a worker thread and register code to run on the UI
  * thread once the async work completes.
- *
+ * <p>
  * Current implementation uses one worker thread, and all work will be queued on this one thread.
  * If the work can be paralleled, for example - receive multiple files from a web server - consider
  * changing the code to use a thread pool.
- *
+ * <p>
  * <p>
  * License is granted to use and/or modify this class in any project, commercial or not.
  * Keep this attribution here and in any credit page you have in your app
@@ -38,23 +38,29 @@ public final class Functify {
     public static final int TH_UI = 1;
     public static final int TH_WORKER = 2;
     public static final int TH_POOL_WORKER = 3;
-    static final CallingBackRunnable cbr = new CallingBackRunnable();
+    //    static final CallingBackRunnable cbr = new CallingBackRunnable();
     private static final String TAG = Functify.class.getSimpleName();
     private static final Handler sAsyncHandler;
     private static final Handler sMainHandler;
     private static final HandlerThread sAsyncHandlerThread = new HandlerThread("WorkerThread");
 
+    private static ArrayList<FuncFlow> mDesroyables = new ArrayList<>();
+
     static {
         sAsyncHandlerThread.start();
         sAsyncHandler = new Handler(sAsyncHandlerThread.getLooper());
         sMainHandler = new Handler(Looper.getMainLooper());
-
     }
 
-    public static FBuilder newFlow() {
-        return new FBuilder();
+    public static FuncFlow newFlow() {
+        return new FuncFlow();
     }
 
+    /**
+     * just a useful method
+     *
+     * @return
+     */
     public static
     @THREAD_TYPE
     int getThreadType() {
@@ -68,12 +74,14 @@ public final class Functify {
 
     /**
      * To prevent memory leaks, call this in your onDestroy(), and all pending work will be canceled.
-     *
      */
     public static void onDestroy() {
-        sMainHandler.removeCallbacks(cbr);
-        sAsyncHandler.removeCallbacks(cbr);
+        for (FuncFlow fb : mDesroyables) {
 
+            fb.clean();
+
+        }
+        mDesroyables.clear();
     }
 
     /**
@@ -99,22 +107,112 @@ public final class Functify {
         void onFException(Throwable e);
     }
 
-    public static class FBuilder {
+    public static class FuncFlow implements Runnable {
 
+        // one per flow
+        final CallingBackRunnable cbr = new CallingBackRunnable();
         ArrayList<Func> runnables = new ArrayList<>();
         private FExceptionHandler fExceptionHandler;
+        private boolean mDestroyable = true;
+        private Bundle bundle = null;
 
-
-        public void execute() {
-            int index = 0;
-            Bundle b = new Bundle();
-            execute(b, index);
+        /**
+         * called once a flow is complete
+         *
+         */
+        private void clean() {
+            // just stay on the safe side
+            sMainHandler.removeCallbacks(cbr);
+            if (mDestroyable) {
+                runnables.clear();
+                sAsyncHandler.removeCallbacks(cbr);
+            } // if marked not to be destroyed: keep it. We're not even supposed to be here
         }
 
-        private void execute(final Bundle b, final int i) {
+        /**
+         * Optional call: if not called, it's like calling with 'true'.
+         * <p>
+         * when onDestroyed() is called (you must call it in your onDestry()), all the destroyable flows will be cleared.
+         * call this with 'true' only if you need a task to outlive the Activity, and that has no reference to Context.
+         * <p>
+         *
+         * @param b
+         */
+        public FuncFlow setIsDestroyable(boolean b) {
+            mDestroyable = b;
+            return this;
+        }
+
+        /**
+         * same as executeDelayed(0); (no delay)
+         */
+        public void execute() {
+            executeDelayed(0);
+        }
+
+        private boolean isDestroyable() {
+            return mDestroyable;
+        }
+
+        /**
+         * execute the flow later.
+         * <p>
+         * beware:
+         * it will not fire while in deep sleep. (as handler depends on
+         * uptimeMillis = not advancing while off).
+         * deep sleep will postpone post.
+         * If you must fire even in deep sleep - use the AlarmManager
+         * <p>
+         * also note:
+         * calling Fuctify.onDestroy() will cancel this, if not executed yet. (Unless marked as "setIsDestroyable(false)")
+         *
+         * @param delay
+         */
+        public void executeDelayed(long delay) {
+            if (runnables.size() == 0) {
+                return;
+            }
+            int whereToRun = runnables.get(0).whereToRun;
+            if (whereToRun == TH_ANY || whereToRun == TH_WORKER) {
+                sAsyncHandler.postDelayed(this, delay);
+            } else {
+                sMainHandler.postDelayed(this, delay);
+            }
+        }
+
+        /**
+         * can be safely called as a simple method call from any thread
+         * but it's best to use execute() or executeDelayed() because they take into account the thread of the first function
+         */
+        @Override
+        public void run() {
+            if (runnables.size() == 0) {
+                // empty execution list, nothing to do here
+                return;
+            }
+            int index = 0;
+            if (bundle == null) {
+                bundle = new Bundle();
+            }
+            if (isDestroyable()) {
+                mDesroyables.add(this);
+            }
+            operateOnLoop(bundle, index);
+        }
+
+        /**
+         * a pseudo-recursive call
+         * pseudo - because it doesn't actually enter the call stack
+         * recursive - because it calls itself if there's more functions in queue).
+         *
+         * @param b
+         * @param i
+         */
+        private void operateOnLoop(final Bundle b, final int i) {
             // starting with an empty bundle
             if (i >= runnables.size()) {
                 // flow is complete
+                clean();
                 return;
             }
             cbr.func = runnables.get(i);
@@ -123,7 +221,7 @@ public final class Functify {
                 @Override
                 public void onComplete() {
                     // go to next
-                    execute(b, i + 1);
+                    operateOnLoop(b, i + 1);
                 }
 
                 @Override
@@ -136,27 +234,29 @@ public final class Functify {
                     }
                 }
             };
-            if (cbr.func.whereToRun == TH_WORKER) {
+            if (cbr.func.whereToRun == TH_ANY) {
+                // just run on the current thread
+                cbr.run();
+            } else if (cbr.func.whereToRun == TH_WORKER) {
                 sAsyncHandler.post(cbr);
             } else if (cbr.func.whereToRun == TH_UI) {
                 sMainHandler.post(cbr);
-            } else { //TH_ANY, pool
-                // run on the current thread, or on a thread pool
+            } else { // pool
+                // run on a thread pool
                 // todo
                 throw new RuntimeException("todo");
             }
-
         }
 
-        public FBuilder runAsync(Func func) {
-            // run the runnable on a worker thread and return this FBuilder when done
+        public FuncFlow runAsync(Func func) {
+            // run the runnable on a worker thread and return this FuncFlow when done
             func.whereToRun = TH_WORKER;
             runnables.add(func);
             return this;
         }
 
-        public FBuilder runAllAsync(Func... funcs) {
-            // run the runnable on a worker thread and return this FBuilder when done
+        public FuncFlow runAllAsync(Func... funcs) {
+            // run the runnable on a worker thread and return this FuncFlow when done
             for (Func f : funcs) {
                 f.whereToRun = TH_POOL_WORKER;
                 runnables.add(f);
@@ -164,13 +264,18 @@ public final class Functify {
             return this;
         }
 
-        public FBuilder runOnMain(Func func) {
+        public FuncFlow runOnMain(Func func) {
+            if (!mDestroyable) {
+                // avoid that: this will lead to memory leaks
+                throw new IllegalStateException("Trying to run an un-destroyable flow on the main thread");
+            }
+
             func.whereToRun = TH_UI;
             runnables.add(func);
             return this;
         }
 
-        public FBuilder runOnAny(Func func) {
+        public FuncFlow runOnAny(Func func) {
             func.whereToRun = TH_ANY;
             runnables.add(func);
             return this;
@@ -193,6 +298,15 @@ public final class Functify {
                     execute();
                 }
             });
+        }
+
+
+        public Bundle getBundle() {
+            return bundle;
+        }
+
+        public void setBundle(Bundle bundle) {
+            this.bundle = bundle;
         }
     }
 

@@ -6,7 +6,7 @@ import android.util.Log;
 import android.widget.Button;
 import android.widget.TextView;
 
-import com.mindtheapps.functify.Functify.FBuilder;
+import com.mindtheapps.functify.Functify.FuncFlow;
 
 public class MainActivity extends AppCompatActivity {
     private static final String TAG = MainActivity.class.getSimpleName();
@@ -42,7 +42,7 @@ public class MainActivity extends AppCompatActivity {
      * @param text
      */
     private void example1(final TextView text) {
-        FBuilder fb = Functify.newFlow();
+        FuncFlow fb = Functify.newFlow();
         fb.setExceptionHandler(eh);
         fb.runAsync(new Functify.Func() {
             @Override
@@ -97,7 +97,7 @@ public class MainActivity extends AppCompatActivity {
      * @param text
      */
     private void example2(final Button btn) {
-        FBuilder fb = Functify.newFlow();
+        Functify.FuncFlow fb = Functify.newFlow();
         fb.setExceptionHandler(eh);
         fb.runOnMain(new Functify.Func() {
             @Override

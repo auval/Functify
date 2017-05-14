@@ -4,8 +4,8 @@ Functify
 This one-class library is a (working) proof of concept for a way to write a functional program flow in Android 
 without over complicating your design with complex and subtle design patterns.
 
-Enable you to write an asynchronous work on a worker thread and register code to run on the UI 
-thread once the async work completes, and event continue a flow of work on different threads as needed.
+It enables you to write an asynchronous work to be run on a worker thread and register code to run on the UI 
+thread once the async work completes, and to continue a flow of work on different threads as needed.
 
 My goal was to make the most simple flow to interleave the main thread with operations that must operate on a background thread and call back 
 to the main thread when done, so it could update the UI.
@@ -29,7 +29,7 @@ like in the example.
 ```java
 
     private void example1(final TextView text) {
-        FBuilder fb = Functify.newFlow();
+        FuncFlow fb = Functify.newFlow();
         fb.setExceptionHandler(eh);
         fb.runAsync(new Functify.Func() {
             @Override
@@ -65,20 +65,23 @@ like in the example.
         
 ```
 
-### Notes
+### Implementation Notes
 
-- The `Bundle` argument is created once, when the first `execute()` is called, and the
+- An empty `Bundle` object is created when the `execute()` is called, and the
   same object is passed through all the calls in the flow - serving as a generic 
   way to pass data between stags.
+  - You can use an existing Bundle and pass it to the execution flow using setBundle();
 - Each step of the flow is presented as one `Functify.Func` Object, and `Functify` iterates over the `Func`
-  list efficiently - without creating any new objects.
-- Currently there's only one worked thread employed. 
-  It's easy enough to extend Functify to employ more threads or a thread pool, though.
-- In the Activity's onDestroy() you must call Functify.onDestroy() -- to prevent memory leaks
+  list.
+- Currently there's only one worked thread employed.   It's easy enough to extend Functify to employ more threads or a thread pool, though.
+- The worker thread is created statically once, and lives throughout the life of the app (this is a best practice).
+- In the Activity's onDestroy() you must call Functify.onDestroy() -- to prevent memory leaks.
+  It will stop the flow after the current step finishes, prevent calling the next step.  
 - If you need a background tasks to live longer than your Activity - isolate the call from the context, and don't call the onDestroy().
     - ie. Don't hold any reference (even implicit) to a View or an Activity, use static class or a separate class
 - The exception handler is optional. If none defined, it will fail silently. 
   The `eh` FExceptionHandler omitted  from the above example can be
+- A `FuncFlow` is also a `Runnable`, with all needed initialization done in its `run()` method. So and you can start it yourself like any other Runnable.  
     
 ```java
     Functify.FExceptionHandler eh = new Functify.FExceptionHandler() {
