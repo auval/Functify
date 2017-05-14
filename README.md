@@ -22,7 +22,7 @@ The basic flow supported here:
 5. When the worker's work is done, run some code on the UI thread (such as UI update)
 6. etc
 
-To use this flow in your code, all you need is to copy the "Functify.java" file to your code, and start using it
+To use this flow in your code, all you need is to copy the "[Functify.java](app/src/main/java/com/mindtheapps/functify/Functify.java) " file to your code, and start using it
 like in the example.
 
 
@@ -77,5 +77,21 @@ like in the example.
 - In the Activity's onDestroy() you must call Functify.onDestroy() -- to prevent memory leaks
 - If you need a background tasks to live longer than your Activity - isolate the call from the context, and don't call the onDestroy().
     - ie. Don't hold any reference (even implicit) to a View or an Activity, use static class or a separate class
+- The exception handler is optional. If none defined, it will fail silently. 
+  The `eh` FExceptionHandler omitted  from the above example can be
     
- 
+```java
+    Functify.FExceptionHandler eh = new Functify.FExceptionHandler() {
+        @Override
+        public void onFException(Throwable e) {
+            if (BuildConfig.DEBUG) {
+                // let the app crash
+                throw new RuntimeException(e);
+            } else {
+                // fail nicely
+                // send to your bug tracking utility
+                Log.e(TAG, "Something went wrong during execution", e);
+            }
+        }
+    };
+```
