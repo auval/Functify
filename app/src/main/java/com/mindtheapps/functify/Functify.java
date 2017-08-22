@@ -9,6 +9,7 @@ import android.util.Log;
 import android.view.View;
 
 import java.lang.annotation.Retention;
+import java.lang.ref.WeakReference;
 import java.util.ArrayList;
 
 import static java.lang.annotation.RetentionPolicy.SOURCE;
@@ -17,8 +18,10 @@ import static java.lang.annotation.RetentionPolicy.SOURCE;
  * Functify
  * --------
  * <p>
- * Enables you to write an asynchronous work on a worker thread and register code to run on the UI
- * thread once the async work completes.
+ * Enables you to write any series of operation to execute one after the other.
+ * An asynchronous func will work on a worker thread
+ * And UI - on the main thread.
+ * "ANY" means that it will use the last thread used.
  * <p>
  * Current implementation uses one worker thread, and all work will be queued on this one thread.
  * If the work can be paralleled, for example - receive multiple files from a web server - consider
@@ -44,7 +47,7 @@ public final class Functify {
     private static final Handler sMainHandler;
     private static final HandlerThread sAsyncHandlerThread = new HandlerThread("WorkerThread");
 
-    private static ArrayList<FuncFlow> mDesroyables = new ArrayList<>();
+    private static ArrayList<WeakReference<FuncFlow>> mDesroyables = new ArrayList<>();
 
     static {
         sAsyncHandlerThread.start();
@@ -76,12 +79,22 @@ public final class Functify {
      * To prevent memory leaks, call this in your onDestroy(), and all pending work will be canceled.
      */
     public static void onDestroy() {
-        for (FuncFlow fb : mDesroyables) {
-
-            fb.clean();
-
+        for (WeakReference<FuncFlow> fb : mDesroyables) {
+            FuncFlow funcFlow = fb.get();
+            if (funcFlow != null)
+                funcFlow.clean();
         }
+
         mDesroyables.clear();
+    }
+
+    /**
+     * quick way to run async any runnable now.
+     *
+     * @param r
+     */
+    public static void justRunAsync(Runnable r) {
+        sAsyncHandler.post(r);
     }
 
     /**
@@ -112,13 +125,13 @@ public final class Functify {
         // one per flow
         final CallingBackRunnable cbr = new CallingBackRunnable();
         ArrayList<Func> runnables = new ArrayList<>();
-        private FExceptionHandler fExceptionHandler;
+        private WeakReference<FExceptionHandler> fExceptionHandler;
         private boolean mDestroyable = true;
         private Bundle bundle = null;
 
+
         /**
          * called once a flow is complete
-         *
          */
         private void clean() {
             // just stay on the safe side
@@ -127,6 +140,9 @@ public final class Functify {
                 runnables.clear();
                 sAsyncHandler.removeCallbacks(cbr);
             } // if marked not to be destroyed: keep it. We're not even supposed to be here
+            if (fExceptionHandler != null) {
+                fExceptionHandler.clear();
+            }
         }
 
         /**
@@ -195,7 +211,7 @@ public final class Functify {
                 bundle = new Bundle();
             }
             if (isDestroyable()) {
-                mDesroyables.add(this);
+                mDesroyables.add(new WeakReference<>(this));
             }
             operateOnLoop(bundle, index);
         }
@@ -217,23 +233,8 @@ public final class Functify {
             }
             cbr.func = runnables.get(i);
             cbr.b = b;
-            cbr.cb = new FCallback() {
-                @Override
-                public void onComplete() {
-                    // go to next
-                    operateOnLoop(b, i + 1);
-                }
+            cbr.cb = new MyFCallback(i + 1);
 
-                @Override
-                public void onFException(FException e) {
-                    if (fExceptionHandler != null) {
-                        fExceptionHandler.onFException(e);
-                        // stop the flow (could it be useful to have other options, such as retry/backoff wait&retry/ignore and continue/...?)
-                    } else {
-                        throw new RuntimeException(e);
-                    }
-                }
-            };
             if (cbr.func.whereToRun == TH_ANY) {
                 // just run on the current thread
                 cbr.run();
@@ -282,7 +283,7 @@ public final class Functify {
         }
 
         public void setExceptionHandler(FExceptionHandler eh) {
-            this.fExceptionHandler = eh;
+            this.fExceptionHandler = new WeakReference<>(eh);
         }
 
         /**
@@ -300,13 +301,38 @@ public final class Functify {
             });
         }
 
-
         public Bundle getBundle() {
             return bundle;
         }
 
         public void setBundle(Bundle bundle) {
             this.bundle = bundle;
+        }
+
+        class MyFCallback implements FCallback {
+            Bundle b;
+            int i;
+
+            public MyFCallback(int i) {
+                this.i = i;
+            }
+
+            @Override
+            public void onComplete() {
+
+                // go to next
+                operateOnLoop(b, i);
+            }
+
+            @Override
+            public void onFException(FException e) {
+                if (fExceptionHandler != null && fExceptionHandler.get() != null) {
+                    fExceptionHandler.get().onFException(e);
+                    // stop the flow (could it be useful to have other options, such as retry/backoff wait&retry/ignore and continue/...?)
+                } else {
+                    throw new RuntimeException(e);
+                }
+            }
         }
     }
 
